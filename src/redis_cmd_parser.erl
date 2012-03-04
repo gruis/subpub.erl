@@ -16,7 +16,7 @@ parse(Input) ->
 % match *Nargs
 parse([42 | Nargs], Rest) ->
   [Command | Args] = parse_args(list_to_integer(string:strip(Nargs)), Rest),
-  parse({command, Command}, {args, Args});
+  parse({command, string:to_upper(Command)}, {args, Args});
 
 % match $Bytes
 parse([36 | Argl], Input) ->
@@ -54,7 +54,7 @@ parse({command, "SHUTDOWN"}, {args, _}) ->
 
 parse(Line, Rest) when is_list(Line), is_list(Rest) ->
   {ok, Command, Args} = next_token(Line),
-  parse({command, Command}, {args, string:tokens(Args, " ")}).
+  parse({command, string:to_upper(Command)}, {args, string:tokens(Args, " ")}).
 
 
 parse_args(Num, Input) ->
