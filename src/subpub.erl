@@ -133,7 +133,7 @@ tell_client(Client, {Msg, "\r\n"}) ->
 tell_client(Client, {Msg, Tail}) ->
   gen_tcp:send(Client, list_to_binary(string:concat(string:concat(Msg, Tail), "\r\n")));
 
-tell_client(Client, []) ->
+tell_client(_Client, []) ->
   % code smell
   fail;
 
