@@ -13,8 +13,8 @@ listen(Port) ->
 
 procmsgs(Connections) ->
   receive
-    {publish, topic, Msg} ->
-      [C ! {publish, topic, Msg} || C <- Connections],
+    {publish, Topic, Msg} ->
+      [C ! {publish, Topic, Msg} || C <- Connections],
       procmsgs(Connections);
     {register, Proc} ->
       procmsgs([Proc|Connections]);
@@ -34,7 +34,7 @@ handle_client(Client) ->
   loop_client(Client).
 
 loop_client(Client) ->
-    case gen_tcp:recv(Client, 0) of
+    case gen_tcp:recv(Client, 0, 100) of
         {ok, Data} ->
           io:format("recv: ~p.~n", [Data]),
           [{command, Command} | Rest] = redis_cmd_parser:parse(binary_to_list(Data)),
@@ -42,13 +42,27 @@ loop_client(Client) ->
           io:format("resp: ~p.~n", [Reply]),
           tell_client(Client, Reply),
           loop_client(Client);
+        {error, timeout} ->
+          receive
+            {publish, Topic, Msg} -> 
+              case lists:any(fun(E) -> E == Topic end, get(subs)) of
+                  true ->
+                      tell_client(Client, Msg);
+                  _ -> nothing
+              end,
+              loop_client(Client)
+          after 100 ->
+              loop_client(Client)
+          end;
         {error, closed} ->
-          ok
+          ok;
+        {error, Reason} ->
+          io:format("failed: ~p.~n", [Reason])
     end.
 
 
-procmd(_Client, "PUBLISH", [{topic, _Topic}, {msg, _Msg}]) ->
-  something,
+procmd(_Client, "PUBLISH", [{topic, Topic}, {msg, Msg}]) ->
+  broadcaster ! {publish, Topic, Msg},
   "ok";
 
 procmd(Client, "SUBSCRIBE", [{topics, Topics}]) ->

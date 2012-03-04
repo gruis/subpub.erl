@@ -11,5 +11,8 @@ puts s.readpartial(1024).inspect
 s.write("SUBSCRIBE movies episodes\r\n")
 puts s.readpartial(1024).inspect
 
-s.write("SHUTDOWN\r\n")
+#s.write("SHUTDOWN\r\n")
+puts s.gets.inspect
+puts s.gets.inspect
+puts s.gets.inspect
 puts s.gets.inspect
