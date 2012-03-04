@@ -69,10 +69,14 @@ procmd(Client, "SUBSCRIBE", [{topics, Topics}]) ->
     Topics);
 
 procmd(Client, "UNSUBSCRIBE", [{topics, Topics}]) ->
+  case length(Topics) of
+      0 -> Utopics = get(subs);
+      _ -> Utopics = Topics
+  end,
   lists:foldl(
     fun(Topic, Reply) -> string:concat(Reply, unsubscribe(Client, Topic)) end, 
     "", 
-    Topics);
+    Utopics);
 
 procmd(Client, "QUIT", _) ->
   tell_client(Client, "+ok"),
@@ -122,5 +126,16 @@ publish(_Client, Topic, Msg) ->
       "\r\n"
     ]).
 
+
+tell_client(Client, {Msg, "\r\n"}) ->
+  gen_tcp:send(Client, list_to_binary(string:concat(Msg, "\r\n")));
+
+tell_client(Client, {Msg, Tail}) ->
+  gen_tcp:send(Client, list_to_binary(string:concat(string:concat(Msg, Tail), "\r\n")));
+
+tell_client(Client, []) ->
+  % code smell
+  fail;
+
 tell_client(Client, Msg) ->
-  gen_tcp:send(Client, list_to_binary(string:concat(Msg, "\r\n"))).
+  tell_client(Client, lists:split(length(Msg) -2, Msg)).
