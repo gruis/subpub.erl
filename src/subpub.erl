@@ -8,7 +8,8 @@ listen() ->
 
 listen(Port) ->
   {ok, LSocket} = gen_tcp:listen(Port, ?TCP_OPTIONS),
-  accept(LSocket, spawn(?MODULE, procmsgs, [[]])).
+  register(broadcaster, spawn(?MODULE, procmsgs, [[]])),
+  accept(LSocket).
 
 procmsgs(Connections) ->
   receive
@@ -22,10 +23,10 @@ procmsgs(Connections) ->
       procmsgs(Connections)
   end.
 
-accept(LSocket, Broadcaster) ->
+accept(LSocket) ->
     {ok, Socket} = gen_tcp:accept(LSocket),
-    Broadcaster ! {register, spawn(?MODULE, handle_client, [Socket])},
-    accept(LSocket, Broadcaster).
+    broadcaster ! {register, spawn(?MODULE, handle_client, [Socket])},
+    accept(LSocket).
 
 handle_client(Client) ->
   put(subs, []),
