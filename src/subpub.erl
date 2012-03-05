@@ -1,5 +1,5 @@
 -module(subpub).
--export([listen/0, listen/1, procmsgs/1, handle_client/1]).
+-export([listen/0, listen/1, bcastmsgs/1, publisher/2, reader/2]).
 
 -define(TCP_OPTIONS, [binary, {packet, 0}, {active, false}, {reuseaddr, true}]).
 
@@ -8,54 +8,88 @@ listen() ->
 
 listen(Port) ->
   {ok, LSocket} = gen_tcp:listen(Port, ?TCP_OPTIONS),
-  register(broadcaster, spawn(?MODULE, procmsgs, [[]])),
+  register(broadcaster, spawn(?MODULE, bcastmsgs, [[]])),
   accept(LSocket).
 
-procmsgs(Connections) ->
+%% Wait for a  message from any client and broadcast
+%% it to all other client handlers. The client handlers
+%% decide if their client is subscribed to the message
+%% topic or not.
+bcastmsgs(Connections) ->
   receive
     {publish, Topic, Msg} ->
       [C ! {publish, Topic, Msg} || C <- Connections],
-      procmsgs(Connections);
+      bcastmsgs(Connections);
     {register, Proc} ->
-      procmsgs([Proc|Connections]);
+      bcastmsgs([Proc|Connections]);
     Other ->
       io:format("received unrecognized message: ~p.~n", [Other]),
-      procmsgs(Connections)
+      bcastmsgs(Connections)
   end.
 
+%% Accept a connection from a client.
+%% When a client does connect, start a publisher 
+%% and a reader for that client.
 accept(LSocket) ->
     {ok, Socket} = gen_tcp:accept(LSocket),
-    broadcaster ! {register, spawn(?MODULE, handle_client, [Socket])},
+    Publisher    = spawn(?MODULE, publisher, [init, Socket]),
+    Reader       = spawn(?MODULE, reader, [Socket, Publisher]),
+    Publisher   ! {register, reader, Reader},
+    broadcaster ! {register, Publisher},
     accept(LSocket).
 
-handle_client(Client) ->
+
+% publisher sends data to client and manages its description
+publisher(init, Client) ->
+  % TODO link to Writer
   put(subs, []),
   put(psubs, []),
-  loop_client(Client).
+  publisher(Client).
 
-loop_client(Client) ->
-    case gen_tcp:recv(Client, 0, 100) of
+publisher(Client) ->
+  receive
+    {register, reader, Reader} ->
+      put(reader, Reader);
+    {publish, Topic, Msg} -> 
+      case lists:any(fun(E) -> E == Topic end, get(subs)) of
+          true -> tell_client(Client, publish(Client, Topic, Msg));
+          _ -> nothing
+      end;
+    {subscribe, Topic} ->
+      put(subs, [Topic | get(subs)]),
+      get(reader) ! { subs_cnt, length(get(subs))};
+    {unsubscribe, Topic} ->
+      Subs = get(subs),
+      put(subs, [E || E <- Subs, E =/= Topic]),
+      get(reader) ! { subs_cnt, length(get(subs)) };
+    {subs} ->
+      get(reader) ! { subs, get(subs) };
+    {quit} ->
+      io:format("received quit message, but not doing anything");
+    M -> 
+      io:format("(70) got an unrecognized message ~p~n", [M])
+  end,
+  publisher(Client).
+
+
+%% reader listens to the client for data
+reader(Client, Publisher) ->
+  put(publisher, Publisher),
+  reader(Client).
+
+reader(Client) ->
+    case gen_tcp:recv(Client, 0) of
         {ok, Data} ->
           [{command, Command} | Rest] = redis_cmd_parser:parse(binary_to_list(Data)),
           Reply = procmd(Client, Command, Rest),
           tell_client(Client, Reply),
-          loop_client(Client);
-        {error, timeout} ->
-          receive
-            {publish, Topic, Msg} -> 
-              case lists:any(fun(E) -> E == Topic end, get(subs)) of
-                  true -> tell_client(Client, publish(Client, Topic, Msg));
-                  _ -> nothing
-              end,
-              loop_client(Client)
-          after 100 ->
-              loop_client(Client)
-          end;
+          reader(Client);
         {error, closed} ->
           ok;
         {error, Reason} ->
           io:format("failed: ~p.~n", [Reason])
     end.
+
 
 
 procmd(_Client, "PUBLISH", [{topic, Topic}, {msg, Msg}]) ->
@@ -70,7 +104,11 @@ procmd(Client, "SUBSCRIBE", [{topics, Topics}]) ->
 
 procmd(Client, "UNSUBSCRIBE", [{topics, Topics}]) ->
   case length(Topics) of
-      0 -> Utopics = get(subs);
+      0 -> 
+        get(publisher) ! { subs },
+        receive
+          {subs, Utopics} -> true
+        end;
       _ -> Utopics = Topics
   end,
   lists:foldl(
@@ -89,30 +127,37 @@ procmd(Client, "SHUTDOWN", _) ->
 procmd(_Client, Command, _Args) ->
   string:concat("unrecognized command ", Command).
 
+
 subscribe(_Client, Topic) ->
-  put(subs, [Topic|get(subs)]),
-  Cnt = length(get(subs)),
-  lists:foldl(fun(E, Sum) -> string:concat(Sum, E) end, "*3\r\n$9\r\nsubscribe\r\n$", 
-    [ integer_to_list(length(Topic)),
-      "\r\n",
-      Topic,
-      "\r\n:",
-      integer_to_list(Cnt),
-      "\r\n"
-    ]).
+  get(publisher) ! {subscribe, Topic},
+  receive
+    {subs_cnt, Cnt} ->
+      lists:foldl(fun(E, Sum) -> string:concat(Sum, E) end, "*3\r\n$9\r\nsubscribe\r\n$", 
+        [ integer_to_list(length(Topic)),
+          "\r\n",
+          Topic,
+          "\r\n:",
+          integer_to_list(Cnt),
+          "\r\n"
+        ]);
+    M -> io:format("got an unrecognized message ~p~n", [M])
+
+  end.
 
 unsubscribe(_Client, Topic) ->
-  Subs = get(subs),
-  put(subs, [E || E <- Subs, E =/= Topic]),
-  Cnt = length(get(subs)),
-  lists:foldl(fun(E, Sum) -> string:concat(Sum, E) end, "*3\r\n$11\r\nunsubscribe\r\n$", 
-    [ integer_to_list(length(Topic)),
-      "\r\n",
-      Topic,
-      "\r\n:",
-      integer_to_list(Cnt),
-      "\r\n"
-    ]).
+  get(publisher) ! {unsubscribe, Topic},
+  receive
+    {subs_cnt, Cnt} ->
+      lists:foldl(fun(E, Sum) -> string:concat(Sum, E) end, "*3\r\n$11\r\nunsubscribe\r\n$", 
+        [ integer_to_list(length(Topic)),
+          "\r\n",
+          Topic,
+          "\r\n:",
+          integer_to_list(Cnt),
+          "\r\n"
+        ]);
+    M -> io:format("(166) unrecognized message ~p", [M])
+  end.
 
 publish(_Client, Topic, Msg) ->
   lists:foldl(fun(E, Sum) -> string:concat(Sum, E) end, "*3\r\n$7\r\nmessage\r\n$", 
