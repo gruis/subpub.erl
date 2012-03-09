@@ -102,19 +102,21 @@ procmd(Client, "SUBSCRIBE", [{topics, Topics}]) ->
     "", 
     Topics);
 
-procmd(Client, "UNSUBSCRIBE", [{topics, Topics}]) ->
-  case length(Topics) of
-      0 -> 
-        get(publisher) ! { subs },
-        receive
-          {subs, Utopics} -> true
-        end;
-      _ -> Utopics = Topics
+procmd(Client, "UNSUBSCRIBE", [{topics, ""}]) ->
+  get(publisher) ! { subs },
+  receive
+    {subs, Topics} -> true
   end,
   lists:foldl(
     fun(Topic, Reply) -> string:concat(Reply, unsubscribe(Client, Topic)) end, 
     "", 
-    Utopics);
+    Topics);
+
+procmd(Client, "UNSUBSCRIBE", [{topics, Topics}]) ->
+  lists:foldl(
+    fun(Topic, Reply) -> string:concat(Reply, unsubscribe(Client, Topic)) end, 
+    "", 
+    Topics);
 
 procmd(Client, "QUIT", _) ->
   tell_client(Client, "+ok"),
